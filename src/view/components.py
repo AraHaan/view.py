@@ -2,11 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from typing_extensions import (
-    NotRequired,
-    TypedDict,
-    Unpack,
-)
+from typing_extensions import NotRequired, TypedDict, Unpack
 
 
 class DOMNode:
@@ -23,7 +19,9 @@ class DOMNode:
     __view_result__ = __str__
 
 
-AutoCapitalizeType = Literal["off", "none", "on", "sentences", "words", "characters"]
+AutoCapitalizeType = Literal[
+    "off", "none", "on", "sentences", "words", "characters"
+]
 DirType = Literal["ltr", "rtl", "auto"]
 
 
@@ -46,7 +44,7 @@ NEWLINE = "\n"
 
 def _node(
     name: str,
-    text: tuple[str | DOMNode],
+    text: tuple[str | DOMNode, ...],
     attrs: dict[str, Any],
     kwargs: GlobalAttributes,
 ) -> DOMNode:

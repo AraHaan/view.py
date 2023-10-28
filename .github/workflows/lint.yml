@@ -1,0 +1,33 @@
+name: Lint
+
+on:
+    push:
+        branches:
+            - master
+    pull_request:
+concurrency: lint-${{ github.sha }}
+
+jobs:
+    lint:
+        runs-on: ubuntu-latest
+
+        env:
+            PYTHON_VERSION: "3.10"
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v3
+
+            - name: Set up Python ${{ env.PYTHON_VERSION }}
+              uses: actions/setup-python@v3
+              with:
+                  python-version: ${{ env.PYTHON_VERSION }}
+
+            - name: Install development dependencies
+              run: pip install .[dev]
+
+            - name: Lint with Ruff
+              run: ruff check .
+
+            - name: Type Checking
+              run: mypy src

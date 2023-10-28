@@ -96,7 +96,7 @@ def markdown_docs(docs: DocsType) -> str:
     final: list[str] = []
     types: list[Any] = []
     if docs:
-        final.append(f"\n## Routes")
+        final.append("\n## Routes")
     else:
         final.append("\n*This app is empty...*")
 
