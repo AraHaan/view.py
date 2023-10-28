@@ -91,8 +91,8 @@ class TestingContext:
         body: dict[str, Any] | None = None,
         query: dict[str, Any] | None = None,
     ) -> TestingResponse:
-        body_q = asyncio.Queue()
-        start = asyncio.Queue()
+        body_q: asyncio.Queue[str] = asyncio.Queue()
+        start: asyncio.Queue[tuple[dict[str, str], int]] = asyncio.Queue()
 
         async def receive():
             return {
