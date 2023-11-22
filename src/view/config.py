@@ -17,6 +17,7 @@ class AppConfig(ConfigModel, env_prefix="view_app_"):
     app_path: str = ConfigField("app.py:app")
     uvloop: Union[Literal["decide"], bool] = "decide"
     loader_path: Path = Path("./routes")
+    compiler: Literal["pyodide"] = "pyodide"
 
     @field_validator("loader")
     @classmethod

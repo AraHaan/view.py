@@ -4,8 +4,11 @@ from datetime import datetime as DateTime
 from pathlib import Path
 from typing import Generic, TextIO, TypeVar
 
-from .components import DOMNode
-from .typing import BodyTranslateStrategy, SameSite
+from .typing import TYPE_CHECKING, BodyTranslateStrategy, SameSite
+
+if TYPE_CHECKING:
+    from .components import DOMNode
+
 from .util import timestamp
 
 T = TypeVar("T")

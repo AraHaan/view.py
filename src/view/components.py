@@ -1,22 +1,121 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Literal
+import inspect
+from types import FrameType as Frame
+from typing import Any, Callable, Dict, Generic, Literal, TypeVar
 
 from typing_extensions import NotRequired, TypedDict, Unpack
+from varname import varname
+
+from .response import HTML
+
+T = TypeVar("T")
+
+
+class Mutable(Generic[T]):
+    def __init__(self, value: T, name: str, frame: Frame) -> None:
+        self.value = value
+        self.name = name
+        self.frame = frame
+        self.referenced: list[DOMNode] = []
+
+    def __str__(self) -> str:
+        return str(self.value)
+
+
+Script = Callable
 
 
 class DOMNode:
-    def __init__(self, data: str | DOMNode) -> None:
-        self.data = str(data)
-        self.compiler_ready = False
+    def __init__(
+        self,
+        data: tuple[str | DOMNode | Mutable],
+        tag: str,
+        attrs: dict[str, Any],
+    ) -> None:
+        self.data = data
+        self.needs_script = False
+        self.tag = tag
+        self.attrs = attrs
+        self.mutables: list[Mutable] = []
+        self.funcs: list[Script] = []
 
-    def __str__(self) -> str:
-        return self.data
+        for i in data:
+            if isinstance(i, DOMNode):
+                self.mutables.extend(i.mutables)
+                self.funcs.extend(i.funcs)
+
+            if isinstance(i, Mutable):
+                self.needs_script = True
+                self.mutables.append(i)
+                i.referenced.append(self)
+
+        cls = attrs.get("cls")
+        if cls:
+            attrs["class"] = cls
+            attrs.pop("cls")
+            attrs.pop("cls")
+        for k, v in attrs.items():
+            if isinstance(v, bool):
+                attrs[k] = "true" if v else "false"
+
+        for k, v in (attrs.get("data") or {}).items():
+            attrs[f"data-{k}"] = v
+
+        self.attrs = attrs
+
+    def _make_attr_string(self):
+        attr_str = ""
+
+        for k, v in self.attrs.items():
+            if v is None:
+                continue
+
+            k = k.replace("_", "-")
+            if v:
+                attr_str += f" {k}={v!r}"
+            else:
+                attr_str += f" {k}"
+
+        return attr_str
+
+    def script(self, func: Script):
+        self.needs_script = True
+        self.funcs.append(func)
+
+    def compile(self) -> str:
+        current_vars = {}
+
+        for i in self.mutables:
+            scope = {**i.frame.f_globals, **i.frame.f_locals}
+            current_vars[i.name] = scope[i.name]
+
+        mutable_script = [f"{x} = {y}" for x, y in current_vars.items()]
+        func_script = [inspect.getsource(i) for i in self.funcs]
+
+        return "\n".join([*mutable_script, *func_script])
 
     def __repr__(self) -> str:
-        return f"DOMNode({self.data!r})"
+        return f"DOMNode({self.data!r}, {self.tag!r}, {self.attrs!r})"
 
-    __view_result__ = __str__
+    def content(self) -> str:
+        return "\n".join([str(i) for i in self.data])
+
+    def __str__(self) -> str:
+        return f"<{self.tag}{self._make_attr_string()}>{self.content()}</{self.tag}>"
+
+    def __view_result__(self):
+        return HTML(self.__str__()).__view_result__()
+
+
+def mutable(value: T) -> T:
+    name = varname()
+    assert isinstance(name, str)
+    this_frame: Frame | None = inspect.currentframe()
+    assert this_frame
+    assert this_frame.f_back
+    frame = this_frame.f_back
+    return Mutable(value, name, frame)  # type: ignore
 
 
 AutoCapitalizeType = Literal[
@@ -39,9 +138,6 @@ class GlobalAttributes(TypedDict):
     exportparts: NotRequired[str]
 
 
-NEWLINE = "\n"
-
-
 def _node(
     name: str,
     text: tuple[str | DOMNode],
@@ -50,32 +146,7 @@ def _node(
 ) -> DOMNode:
     attributes: dict[str, str | None] = {**kwargs, **attrs}
 
-    cls = kwargs.get("cls")
-    if cls:
-        attributes["class"] = cls
-        kwargs.pop("cls")
-        attributes.pop("cls")
-    for k, v in kwargs.items():
-        if isinstance(v, bool):
-            attributes[k] = "true" if v else "false"
-
-    for k, v in (kwargs.get("data") or {}).items():
-        attributes[f"data-{k}"] = v
-
-    attr_str = ""
-
-    for k, v in attributes.items():
-        if v is None:
-            continue
-
-        k = k.replace("_", "-")
-        if v:
-            attr_str += f" {k}={v!r}"
-        else:
-            attr_str += f" {k}"
-    return DOMNode(
-        f"<{name}{attr_str}>{NEWLINE.join([str(i) for i in text])}</{name}>",
-    )
+    return DOMNode(text, name, attributes)
 
 
 def a(
@@ -2135,4 +2206,5 @@ __all__ = (
     "xmp",
     "stylesheet",
     "js",
+    "mutable",
 )

@@ -32,7 +32,8 @@ dependencies = [
     "mysql-connector-python",
     "pymongo",
     "uvicorn",
-    "aiosqlite"
+    "aiosqlite",
+    "varname"
 ]
 dynamic = ["version", "license"]
 
