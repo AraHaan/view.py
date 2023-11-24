@@ -4,15 +4,16 @@ import inspect
 from types import FrameType as Frame
 from typing import Any, Callable, Dict, Literal, TypeVar
 
-from typing_extensions import NotRequired, TypedDict, Unpack
+from typing_extensions import NotRequired, TypedDict, Unpack, ParamSpec
 from .compiler import compile
 from .response import HTML
 from pathlib import Path
 import ast
 from ast_decompiler import decompile
+import uuid
 
 T = TypeVar("T")
-
+P = ParamSpec("P")
 
 class Mutable:
     def __init__(self, value: str, name: str, frame: Frame) -> None:
@@ -75,6 +76,8 @@ class DOMNode:
         self.funcs: list[Script] = []
         self.heads = [self] if is_head else []
         self.script_setup = False
+        self.events: dict[str, str] = {}
+        self.is_head = is_head
 
         this_frame = inspect.currentframe()
         assert this_frame, "failed to get current frame"
@@ -91,12 +94,21 @@ class DOMNode:
 
         lines = Path(path).read_text(encoding="utf-8").split("\n")
         code = "\n".join(lines[lineno - 1:len(lines)])
-        parsed = ast.parse(_dedent(code))
-        
+        parsed = ast.parse(_dedent(code), filename=path)
+
         for node in parsed.body:
             self._set_muts(node)
 
         call = parsed.body[0]
+        
+        while hasattr(call, "value"):
+            call = getattr(call, "value")
+
+        values = getattr(call, "values", None)
+        if values:
+            for value in values:
+                if isinstance(value, ast.Call):
+                    call = value
 
         while hasattr(call, "value"):
             call = getattr(call, "value")
@@ -112,6 +124,9 @@ class DOMNode:
                 self.funcs.extend(i.funcs)
                 self.heads.extend(i.heads)
 
+                if i.needs_script:
+                    self.needs_script = True
+
         cls = attrs.get("cls")
         if cls:
             attrs["class"] = cls
@@ -126,7 +141,12 @@ class DOMNode:
             attrs[f"data-{k}"] = v
 
         self.attrs = attrs
+        id = self.attrs.get("id")
+        self.id = id or uuid.uuid4().hex
 
+        if not id:
+            self.attrs["id"] = self.id
+        
     def add_node(self, *nodes: DOMNode):
         for node in nodes:
             self.data.append(node)
@@ -154,15 +174,23 @@ class DOMNode:
 
             k = k.replace("_", "-")
             if v:
-                attr_str += f" {k}={v!r}"
+                attr_str += f' {k}="{v}"'
             else:
                 attr_str += f" {k}"
-
+        
         return attr_str
 
     def script(self, func: Script):
         self.needs_script = True
         self.funcs.append(func)
+
+    def event(self, name: str):
+        self.needs_script = True
+        def inner(func: Callable[P, T]) -> Callable[P, T]:
+            self.events[name] = _dedent(inspect.getsource(func))
+            return func
+
+        return inner
 
     def _handle_value(self, value: Any) -> Any:
         if isinstance(value, DOMNode):
@@ -170,7 +198,7 @@ class DOMNode:
 
         return value
 
-    def compile(self) -> str:
+    def compile(self, event_name: str) -> str:
         current_vars = {}
 
         for i in self.mutables.values():
@@ -178,9 +206,9 @@ class DOMNode:
             current_vars[i.name] = scope[i.name]
 
         mutable_script = [f"{x} = {self._handle_value(y)}" for x, y in current_vars.items()]
-        func_script = [compile(_dedent(inspect.getsource(i)), self.call) for i in self.funcs]
- 
-        return "\n".join([*mutable_script, *func_script])
+        #func_script = [compile(_dedent(inspect.getsource(i)), self.call) for i in self.funcs]
+        py = "\n".join(mutable_script) + compile(self.events[event_name], self.call)
+        return py
 
     def __repr__(self) -> str:
         return f"DOMNode({self.data!r}, {self.tag!r}, {self.attrs!r})"
@@ -198,8 +226,18 @@ class DOMNode:
                             script('const __view_pyodide = await loadPyodide();')
                         )
                 self.script_setup = True
+   
 
-            print(self.compile())
+        for i in self.events:
+            compiled = self.compile(i)
+            name = f"__view_{self.id}_{i}"
+            
+            for head in self.heads:
+                head.append(script(f"""let {name} = __view_pyodide.runPython(`def __view_script():
+    {compiled}
+{name}`);"""))
+            self.attrs[f"on{i}"] = name + "()"
+
         return f"<{self.tag}{self._make_attr_string()}>{self.content()}</{self.tag}>"
 
     def __view_result__(self):
@@ -230,10 +268,12 @@ def _node(
     text: tuple[str | DOMNode],
     attrs: dict[str, Any],
     kwargs: GlobalAttributes,
+    *,
+    head: bool = False
 ) -> DOMNode:
     attributes: dict[str, str | None] = {**kwargs, **attrs}
 
-    return DOMNode(text, name, attributes)
+    return DOMNode(text, name, attributes, is_head=head)
 
 
 def a(
@@ -963,6 +1003,7 @@ def head(
             "profile": profile,
         },
         kwargs,
+        head=True
     )
 
 
@@ -2158,8 +2199,8 @@ def js(url: str) -> DOMNode:
 
 _head = head
 
-def page(*bdy: str | DOMNode, head: str | DOMNode | None = None):
-    return html(head or _head(), body(*bdy))
+def page(*bdy: str | DOMNode, head: DOMNode | None = None) -> DOMNode:
+    return _node("html", tuple([head or _node("head", tuple(), {}, {}), *bdy]), {}, {})
 
 __all__ = (
     "a",
