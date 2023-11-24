@@ -2,59 +2,122 @@ from __future__ import annotations
 
 import inspect
 from types import FrameType as Frame
-from typing import Any, Callable, Dict, Generic, Literal, TypeVar
+from typing import Any, Callable, Dict, Literal, TypeVar
 
 from typing_extensions import NotRequired, TypedDict, Unpack
-from varname import varname
-
+from .compiler import compile
 from .response import HTML
+from pathlib import Path
+import ast
+from ast_decompiler import decompile
 
 T = TypeVar("T")
 
 
-class Mutable(Generic[T]):
-    def __init__(self, value: T, name: str, frame: Frame) -> None:
+class Mutable:
+    def __init__(self, value: str, name: str, frame: Frame) -> None:
         self.value = value
         self.name = name
         self.frame = frame
-        self.referenced: list[DOMNode] = []
 
     def __str__(self) -> str:
-        return str(self.value)
+        return self.value
 
 
 Script = Callable
 
 
+def _dedent(data: str):
+    if data[0] not in {" ", "\t"}:
+        return data
+
+    length = 0
+
+    for i in data:
+        if i in {" ", "\t"}:
+            length += 1
+        else:
+            break
+
+    res = ""
+
+    current = 0
+    next_line = True
+
+    for i in data:
+        if (i in {" ", "\t"}) and next_line:
+            current += 1
+            if current == length:
+                next_line = False
+                current = 0
+        elif i == "\n":
+            next_line = True
+            res += i
+        else:
+            res += i
+
+    return res
+
 class DOMNode:
     def __init__(
         self,
-        data: tuple[str | DOMNode | Mutable],
+        data: tuple[str | DOMNode],
         tag: str,
         attrs: dict[str, Any],
+        *,
+        is_head: bool = False
     ) -> None:
-        self.data = data
+        self.data: list[DOMNode | str] = list(data)
         self.needs_script = False
         self.tag = tag
         self.attrs = attrs
-        self.mutables: list[Mutable] = []
+        self.mutables: dict[str, Mutable] = {}
         self.funcs: list[Script] = []
+        self.heads = [self] if is_head else []
+        self.script_setup = False
 
+        this_frame = inspect.currentframe()
+        assert this_frame, "failed to get current frame"
+        nn_frame = this_frame.f_back
+        assert nn_frame, "this frame has no f_back"
+        dom_frame = nn_frame.f_back
+        assert dom_frame, "_new_node frame has no f_back"
+        caller_frame = dom_frame.f_back
+        assert caller_frame, "dom caller has no f_back"
+
+        path = caller_frame.f_code.co_filename
+        lineno = caller_frame.f_lineno
+        self.caller_frame = caller_frame
+
+        lines = Path(path).read_text(encoding="utf-8").split("\n")
+        code = "\n".join(lines[lineno - 1:len(lines)])
+        parsed = ast.parse(_dedent(code))
+        
+        for node in parsed.body:
+            self._set_muts(node)
+
+        call = parsed.body[0]
+
+        while hasattr(call, "value"):
+            call = getattr(call, "value")
+        
+        if not isinstance(call, ast.Call):
+            raise TypeError(f"{ast.dump(call)} is not an ast.Call")
+        
+        self.call = call
+        
         for i in data:
             if isinstance(i, DOMNode):
-                self.mutables.extend(i.mutables)
+                self.mutables.update(i.mutables)
                 self.funcs.extend(i.funcs)
-
-            if isinstance(i, Mutable):
-                self.needs_script = True
-                self.mutables.append(i)
-                i.referenced.append(self)
+                self.heads.extend(i.heads)
 
         cls = attrs.get("cls")
         if cls:
             attrs["class"] = cls
             attrs.pop("cls")
             attrs.pop("cls")
+
         for k, v in attrs.items():
             if isinstance(v, bool):
                 attrs[k] = "true" if v else "false"
@@ -63,6 +126,24 @@ class DOMNode:
             attrs[f"data-{k}"] = v
 
         self.attrs = attrs
+
+    def add_node(self, *nodes: DOMNode):
+        for node in nodes:
+            self.data.append(node)
+
+    append = add_node
+
+    def _set_muts(self, node: ast.stmt) -> None:
+        if hasattr(node, "body"):
+            self._set_muts(getattr(node, "body"))
+
+        if isinstance(node, (ast.Assign, ast.NamedExpr)):
+            for target in node.targets:
+                self._add_mutable(target, node.value)
+
+    def _add_mutable(self, name: ast.expr, value: ast.expr) -> None:
+        assert isinstance(name, ast.Name), f"{ast.dump(name)} is not an ast.Name"
+        self.mutables[name.id] = Mutable(decompile(value), name.id, self.caller_frame)
 
     def _make_attr_string(self):
         attr_str = ""
@@ -83,16 +164,22 @@ class DOMNode:
         self.needs_script = True
         self.funcs.append(func)
 
+    def _handle_value(self, value: Any) -> Any:
+        if isinstance(value, DOMNode):
+            return "__view_node_init()"
+
+        return value
+
     def compile(self) -> str:
         current_vars = {}
 
-        for i in self.mutables:
+        for i in self.mutables.values():
             scope = {**i.frame.f_globals, **i.frame.f_locals}
             current_vars[i.name] = scope[i.name]
 
-        mutable_script = [f"{x} = {y}" for x, y in current_vars.items()]
-        func_script = [inspect.getsource(i) for i in self.funcs]
-
+        mutable_script = [f"{x} = {self._handle_value(y)}" for x, y in current_vars.items()]
+        func_script = [compile(_dedent(inspect.getsource(i)), self.call) for i in self.funcs]
+ 
         return "\n".join([*mutable_script, *func_script])
 
     def __repr__(self) -> str:
@@ -102,21 +189,21 @@ class DOMNode:
         return "\n".join([str(i) for i in self.data])
 
     def __str__(self) -> str:
+        if self.needs_script:
+            if not self.script_setup:
+                for head in self.heads:
+                    if not head.script_setup:
+                        head.append(
+                            script(src="https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js"),
+                            script('const __view_pyodide = await loadPyodide();')
+                        )
+                self.script_setup = True
+
+            print(self.compile())
         return f"<{self.tag}{self._make_attr_string()}>{self.content()}</{self.tag}>"
 
     def __view_result__(self):
         return HTML(self.__str__()).__view_result__()
-
-
-def mutable(value: T) -> T:
-    name = varname()
-    assert isinstance(name, str)
-    this_frame: Frame | None = inspect.currentframe()
-    assert this_frame
-    assert this_frame.f_back
-    frame = this_frame.f_back
-    return Mutable(value, name, frame)  # type: ignore
-
 
 AutoCapitalizeType = Literal[
     "off", "none", "on", "sentences", "words", "characters"
@@ -2069,6 +2156,10 @@ def stylesheet(url: str) -> DOMNode:
 def js(url: str) -> DOMNode:
     return script(src=url)
 
+_head = head
+
+def page(*bdy: str | DOMNode, head: str | DOMNode | None = None):
+    return html(head or _head(), body(*bdy))
 
 __all__ = (
     "a",
@@ -2206,5 +2297,5 @@ __all__ = (
     "xmp",
     "stylesheet",
     "js",
-    "mutable",
+    "page"
 )
