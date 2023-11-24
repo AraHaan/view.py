@@ -66,7 +66,8 @@ class DOMNode:
         tag: str,
         attrs: dict[str, Any],
         *,
-        is_head: bool = False
+        is_head: bool = False,
+        skip_script: bool = False
     ) -> None:
         self.data: list[DOMNode | str] = list(data)
         self.needs_script = False
@@ -78,54 +79,57 @@ class DOMNode:
         self.script_setup = False
         self.events: dict[str, str] = {}
         self.is_head = is_head
-
-        this_frame = inspect.currentframe()
-        assert this_frame, "failed to get current frame"
-        nn_frame = this_frame.f_back
-        assert nn_frame, "this frame has no f_back"
-        dom_frame = nn_frame.f_back
-        assert dom_frame, "_new_node frame has no f_back"
-        caller_frame = dom_frame.f_back
-        assert caller_frame, "dom caller has no f_back"
-
-        path = caller_frame.f_code.co_filename
-        lineno = caller_frame.f_lineno
-        self.caller_frame = caller_frame
-
-        lines = Path(path).read_text(encoding="utf-8").split("\n")
-        code = "\n".join(lines[lineno - 1:len(lines)])
-        parsed = ast.parse(_dedent(code), filename=path)
-
-        for node in parsed.body:
-            self._set_muts(node)
-
-        call = parsed.body[0]
         
-        while hasattr(call, "value"):
-            call = getattr(call, "value")
+        if not skip_script:
+            f = inspect.currentframe()
+            assert f
+            while f.f_back:
+                if f.f_code.co_filename != __file__:
+                    break
 
-        values = getattr(call, "values", None)
-        if values:
-            for value in values:
-                if isinstance(value, ast.Call):
-                    call = value
+                f = f.f_back
+                assert f
+        
+            caller_frame = f
+            path = caller_frame.f_code.co_filename
+            lineno = caller_frame.f_lineno
+            self.caller_frame = caller_frame
 
-        while hasattr(call, "value"):
-            call = getattr(call, "value")
-        
-        if not isinstance(call, ast.Call):
-            raise TypeError(f"{ast.dump(call)} is not an ast.Call")
-        
-        self.call = call
-        
-        for i in data:
-            if isinstance(i, DOMNode):
-                self.mutables.update(i.mutables)
-                self.funcs.extend(i.funcs)
-                self.heads.extend(i.heads)
+            lines = Path(path).read_text(encoding="utf-8").split("\n")
+            code = "\n".join(lines[lineno - 1:len(lines)])
+            parsed = ast.parse(_dedent(code), filename=path)
 
-                if i.needs_script:
-                    self.needs_script = True
+            for node in parsed.body:
+                self._set_muts(node)
+
+            call = parsed.body[0]
+            
+            while hasattr(call, "value"):
+                call = getattr(call, "value")
+
+            values = getattr(call, "values", None)
+            if values:
+                for value in values:
+                    if isinstance(value, ast.Call):
+                        call = value
+
+            while hasattr(call, "value"):
+                call = getattr(call, "value")
+            
+            if not isinstance(call, ast.Call):
+                raise TypeError(f"{ast.dump(call)} is not an ast.Call")
+            
+            self.call = call
+            
+            for i in data:
+                if isinstance(i, DOMNode):
+                    self.mutables.update(i.mutables)
+                    self.funcs.extend(i.funcs)
+                    self.heads.extend(i.heads)
+                    self.events.update(i.events)
+
+                    if i.needs_script:
+                        self.needs_script = True
 
         cls = attrs.get("cls")
         if cls:
@@ -222,21 +226,22 @@ class DOMNode:
                 for head in self.heads:
                     if not head.script_setup:
                         head.append(
-                            script(src="https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js"),
-                            script('const __view_pyodide = await loadPyodide();')
+                            DOMNode(tuple(), "script", {"src": "https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js"}, skip_script=True),
+                            DOMNode(("const __view_pyodide = await loadPyodide();",), "script", {}, skip_script=True),
                         )
+                        head.script_setup = True
                 self.script_setup = True
    
-
-        for i in self.events:
-            compiled = self.compile(i)
-            name = f"__view_{self.id}_{i}"
-            
-            for head in self.heads:
-                head.append(script(f"""let {name} = __view_pyodide.runPython(`def __view_script():
-    {compiled}
-{name}`);"""))
-            self.attrs[f"on{i}"] = name + "()"
+        
+            for i in self.events:
+                compiled = self.compile(i)
+                name = f"__view_{self.id}_{i}"
+                
+                for head in self.heads:
+                    head.append(DOMNode((f"""const {name} = __view_pyodide.runPython(`def __view_script():
+        {compiled}
+    __view_script`);""",), "script", {}, skip_script=True,))
+                self.attrs[f"on{i}"] = name + "()"
 
         return f"<{self.tag}{self._make_attr_string()}>{self.content()}</{self.tag}>"
 
@@ -2200,7 +2205,7 @@ def js(url: str) -> DOMNode:
 _head = head
 
 def page(*bdy: str | DOMNode, head: DOMNode | None = None) -> DOMNode:
-    return _node("html", tuple([head or _node("head", tuple(), {}, {}), *bdy]), {}, {})
+    return html(head or _head(), body(*bdy))
 
 __all__ = (
     "a",
