@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 from types import FrameType as Frame
-from typing import Any, Callable, Dict, Literal, TypeVar
+from typing import Any, Callable, ClassVar, Dict, Literal, TypeVar
 
 from typing_extensions import NotRequired, TypedDict, Unpack, ParamSpec
 from .compiler import compile
@@ -11,7 +11,8 @@ from pathlib import Path
 import ast
 from ast_decompiler import decompile
 import uuid
-
+import textwrap
+from .__about__ import __version__
 T = TypeVar("T")
 P = ParamSpec("P")
 
@@ -27,6 +28,19 @@ class Mutable:
 
 Script = Callable
 
+def _get_indent_style(data: str) -> str:
+    for line in data.split("\n"):
+        if line.startswith((" ", "\t")):
+            amount = 0
+
+            for i in line:
+                if i == "\t":
+                    return "\t"
+                elif i == " ":
+                    amount += 1
+                else:
+                    return " " * 4
+    return "    "
 
 def _dedent(data: str):
     if data[0] not in {" ", "\t"}:
@@ -59,7 +73,36 @@ def _dedent(data: str):
 
     return res
 
+
 class DOMNode:
+    _comp_prefix: ClassVar[str]
+
+    @classmethod
+    def _comp_prefix_init(cls) -> None:
+        cls._comp_prefix = f"""from __future__ import annotations
+# view.py {__version__}
+import js as __view_js
+
+class DOMNode:
+    def __init__(self, *args, **kwargs):
+        ...
+
+    def event(self, text):
+        def a(*args, **kwargs):
+            ...
+        return a
+
+def __view_find(id: str):
+    __view_ele = __view_js.document.getElementById(id)
+    if __view_ele is None:
+        raise TypeError("could not find view.py element")
+    return __view_ele
+
+def __view_node_init(id: str) -> DOMNode:
+    __view_ele = __view_find(id)
+    return DOMNode(__view_ele.innerHTML, __view_ele.tagName, __view_ele.attributes)
+"""
+
     def __init__(
         self,
         data: tuple[str | DOMNode],
@@ -67,7 +110,8 @@ class DOMNode:
         attrs: dict[str, Any],
         *,
         is_head: bool = False,
-        skip_script: bool = False
+        skip_script: bool = False,
+        is_body: bool = False
     ) -> None:
         self.data: list[DOMNode | str] = list(data)
         self.needs_script = False
@@ -76,8 +120,9 @@ class DOMNode:
         self.mutables: dict[str, Mutable] = {}
         self.funcs: list[Script] = []
         self.heads = [self] if is_head else []
+        self.bodies = [self] if is_body else []
         self.script_setup = False
-        self.events: dict[str, str] = {}
+        self.events: dict[str, Script] = {}
         self.is_head = is_head
         
         if not skip_script:
@@ -126,6 +171,7 @@ class DOMNode:
                     self.mutables.update(i.mutables)
                     self.funcs.extend(i.funcs)
                     self.heads.extend(i.heads)
+                    self.bodies.extend(i.bodies)
                     self.events.update(i.events)
 
                     if i.needs_script:
@@ -191,14 +237,14 @@ class DOMNode:
     def event(self, name: str):
         self.needs_script = True
         def inner(func: Callable[P, T]) -> Callable[P, T]:
-            self.events[name] = _dedent(inspect.getsource(func))
+            self.events[name] = func
             return func
 
         return inner
 
     def _handle_value(self, value: Any) -> Any:
         if isinstance(value, DOMNode):
-            return "__view_node_init()"
+            return f"__view_node_init('{self.id}')"
 
         return value
 
@@ -211,7 +257,7 @@ class DOMNode:
 
         mutable_script = [f"{x} = {self._handle_value(y)}" for x, y in current_vars.items()]
         #func_script = [compile(_dedent(inspect.getsource(i)), self.call) for i in self.funcs]
-        py = "\n".join(mutable_script) + compile(self.events[event_name], self.call)
+        py = "\n".join(mutable_script) + compile(_dedent(inspect.getsource(self.events[event_name])), self.call)
         return py
 
     def __repr__(self) -> str:
@@ -220,6 +266,12 @@ class DOMNode:
     def content(self) -> str:
         return "\n".join([str(i) for i in self.data])
 
+    def _gen_update(self) -> str:
+        return f"""
+def __view_update(content: DOMNode | str) -> None:
+    __view_this_element = __view_find('{self.id}')
+    __view_this_element.innerHTML = str(content)"""
+
     def __str__(self) -> str:
         if self.needs_script:
             if not self.script_setup:
@@ -227,27 +279,31 @@ class DOMNode:
                     if not head.script_setup:
                         head.append(
                             DOMNode(tuple(), "script", {"src": "https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js"}, skip_script=True),
-                            DOMNode(("const __view_pyodide = await loadPyodide();",), "script", {}, skip_script=True),
                         )
                         head.script_setup = True
                 self.script_setup = True
-   
         
-            for i in self.events:
+            for i, func in self.events.items():
                 compiled = self.compile(i)
                 name = f"__view_{self.id}_{i}"
                 
-                for head in self.heads:
-                    head.append(DOMNode((f"""const {name} = __view_pyodide.runPython(`def __view_script():
-        {compiled}
-    __view_script`);""",), "script", {}, skip_script=True,))
-                self.attrs[f"on{i}"] = name + "()"
+                for body in self.bodies:
+                    if not body.script_setup:
+                        body.append(DOMNode((f"""const __view_pyodide = await loadPyodide();
+const {name} = __view_pyodide.runPython(`{self._comp_prefix}{self._gen_update()}
+def __view_script():
+{textwrap.indent(compiled, _get_indent_style(compiled))}
+    return {func.__name__}
+__view_script()`);
+document.getElementById('{self.id}').addEventListener('on{i}', {name})""",), "script", {"type": "module"}, skip_script=True,))
+                        body.script_setup = True
 
         return f"<{self.tag}{self._make_attr_string()}>{self.content()}</{self.tag}>"
 
     def __view_result__(self):
         return HTML(self.__str__()).__view_result__()
 
+DOMNode._comp_prefix_init()
 AutoCapitalizeType = Literal[
     "off", "none", "on", "sentences", "words", "characters"
 ]
@@ -274,11 +330,13 @@ def _node(
     attrs: dict[str, Any],
     kwargs: GlobalAttributes,
     *,
-    head: bool = False
+    head: bool = False,
+    body: bool = False,
+    skip_script: bool = False,
 ) -> DOMNode:
     attributes: dict[str, str | None] = {**kwargs, **attrs}
 
-    return DOMNode(text, name, attributes, is_head=head)
+    return DOMNode(text, name, attributes, is_head=head, is_body=body)
 
 
 def a(
@@ -543,6 +601,7 @@ def body(
             "vlink": vlink,
         },
         kwargs,
+        body=True
     )
 
 
