@@ -5,6 +5,7 @@ from types import FrameType as Frame
 from typing import Any, Callable, ClassVar, Dict, Literal, TypeVar
 
 from typing_extensions import NotRequired, TypedDict, Unpack, ParamSpec
+
 from .compiler import compile
 from .response import HTML
 from pathlib import Path
@@ -15,7 +16,8 @@ import textwrap
 from .__about__ import __version__
 T = TypeVar("T")
 P = ParamSpec("P")
-
+B_OPEN = "{"
+B_CLOSE = "}"
 class Mutable:
     def __init__(self, value: str, name: str, frame: Frame) -> None:
         self.value = value
@@ -88,8 +90,8 @@ class DOMNode:
         ...
 
     def event(self, text):
-        def a(*args, **kwargs):
-            ...
+        def a(func):
+            return func
         return a
 
 def __view_find(id: str):
@@ -291,11 +293,12 @@ def __view_update(content: DOMNode | str) -> None:
                     if not body.script_setup:
                         body.append(DOMNode((f"""const __view_pyodide = await loadPyodide();
 const {name} = __view_pyodide.runPython(`{self._comp_prefix}{self._gen_update()}
-def __view_script():
+from pyodide.ffi import create_proxy as __view_create_proxy
+def {name}():
 {textwrap.indent(compiled, _get_indent_style(compiled))}
     return {func.__name__}
-__view_script()`);
-document.getElementById('{self.id}').addEventListener('on{i}', {name})""",), "script", {"type": "module"}, skip_script=True,))
+__view_find('{self.id}').addEventListener('{i}', __view_create_proxy({name}()))
+`);""",), "script", {"type": "module"}, skip_script=True,))
                         body.script_setup = True
 
         return f"<{self.tag}{self._make_attr_string()}>{self.content()}</{self.tag}>"
