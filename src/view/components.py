@@ -6,7 +6,7 @@ from typing import Any, Callable, ClassVar, Dict, Literal, TypeVar
 
 from typing_extensions import NotRequired, TypedDict, Unpack, ParamSpec
 
-from .compiler import compile
+from .compiler import compile, compile_pyodide, dedent as _dedent, get_indent_style as _get_indent_style
 from .response import HTML
 from pathlib import Path
 import ast
@@ -14,10 +14,200 @@ from ast_decompiler import decompile
 import uuid
 import textwrap
 from .__about__ import __version__
+
+__all__ = (
+    "a",
+    "abbr",
+    "acronym",
+    "address",
+    "area",
+    "article",
+    "aside",
+    "audio",
+    "b",
+    "base",
+    "bdi",
+    "bdo",
+    "big",
+    "blockquote",
+    "body",
+    "br",
+    "button",
+    "canvas",
+    "caption",
+    "center",
+    "cite",
+    "code",
+    "col",
+    "colgroup",
+    "data",
+    "datalist",
+    "dd",
+    "html_del",
+    "details",
+    "dfn",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "embed",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "font",
+    "footer",
+    "form",
+    "frame",
+    "frameset",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "header",
+    "hgroup",
+    "hr",
+    "html",
+    "i",
+    "iframe",
+    "image",
+    "img",
+    "input",
+    "ins",
+    "kbd",
+    "label",
+    "legend",
+    "li",
+    "link",
+    "main",
+    "map",
+    "mark",
+    "marquee",
+    "menu",
+    "menuitem",
+    "meta",
+    "meter",
+    "nav",
+    "nobr",
+    "noembed",
+    "noframes",
+    "noscript",
+    "object",
+    "ol",
+    "optgroup",
+    "option",
+    "output",
+    "p",
+    "param",
+    "picture",
+    "plaintext",
+    "portal",
+    "pre",
+    "progress",
+    "q",
+    "rb",
+    "rp",
+    "rt",
+    "rtc",
+    "ruby",
+    "s",
+    "samp",
+    "script",
+    "search",
+    "section",
+    "select",
+    "slot",
+    "small",
+    "source",
+    "span",
+    "strike",
+    "strong",
+    "style",
+    "sub",
+    "summary",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "template",
+    "textarea",
+    "tfoot",
+    "th",
+    "thead",
+    "time",
+    "title",
+    "tr",
+    "track",
+    "tt",
+    "u",
+    "ul",
+    "var",
+    "video",
+    "wbr",
+    "xmp",
+    "stylesheet",
+    "js",
+    "page"
+)
+
 T = TypeVar("T")
 P = ParamSpec("P")
+
+def render(content: str | DOMNode) -> None:
+    raise TypeError("this can only be called from the browser")
+
+def browser_supported(func: T) -> T:
+    setattr(func, "_view_browser_ok", True)
+    return func
+
+def browser_mirror(target: Callable):
+    def inner(func: Callable):
+        setattr(target, "_view_browser_mirror", func)
+        return func
+    return inner
+
+_ESSENTIALS = []
+
+def browser_essential(target: Callable) -> Callable:
+    src = inspect.getsource(target).split("\n")
+    src.pop(0)
+    _ESSENTIALS.append("\n".join(src))
+    def _transport(*args, **kwargs):
+        raise TypeError("this can only be called from the browser")
+
+    return _transport
+
 B_OPEN = "{"
 B_CLOSE = "}"
+
+__view_js = Any  # for browser stuff
+
+@browser_essential
+def __view_find(id: str):
+    __view_ele = __view_js.document.getElementById(id)
+    if __view_ele is None:
+        raise TypeError("could not find view.py element")
+    return __view_ele
+
+@browser_essential
+def __view_named_node_map(map: __view_js.JsProxy) -> dict:
+    res = {}
+
+    for i in range(map.length):
+        item = map.item(i)
+        res[item.name] = item.value
+
+    return res
+
+@browser_essential
+def __view_node_init(id: str) -> DOMNode:
+    __view_ele = __view_find(id)
+    return DOMNode(__view_ele.innerHTML, __view_ele.tagName, __view_named_node_map(__view_ele.attributes))
+
 class Mutable:
     def __init__(self, value: str, name: str, frame: Frame) -> None:
         self.value = value
@@ -29,80 +219,25 @@ class Mutable:
 
 
 Script = Callable
-
-def _get_indent_style(data: str) -> str:
-    for line in data.split("\n"):
-        if line.startswith((" ", "\t")):
-            amount = 0
-
-            for i in line:
-                if i == "\t":
-                    return "\t"
-                elif i == " ":
-                    amount += 1
-                else:
-                    return " " * 4
-    return "    "
-
-def _dedent(data: str):
-    if data[0] not in {" ", "\t"}:
-        return data
-
-    length = 0
-
-    for i in data:
-        if i in {" ", "\t"}:
-            length += 1
-        else:
-            break
-
-    res = ""
-
-    current = 0
-    next_line = True
-
-    for i in data:
-        if (i in {" ", "\t"}) and next_line:
-            current += 1
-            if current == length:
-                next_line = False
-                current = 0
-        elif i == "\n":
-            next_line = True
-            res += i
-        else:
-            res += i
-
-    return res
-
+NEWLINE = "\n"
 
 class DOMNode:
     _comp_prefix: ClassVar[str]
 
     @classmethod
     def _comp_prefix_init(cls) -> None:
+        src = compile_pyodide(cls)
+        glb = globals()
+        elements = [inspect.getsource(_node)] + [inspect.getsource(glb[i]) for i in __all__]
+
         cls._comp_prefix = f"""from __future__ import annotations
 # view.py {__version__}
 import js as __view_js
+def browser_supported(func): return func
 
-class DOMNode:
-    def __init__(self, *args, **kwargs):
-        ...
-
-    def event(self, text):
-        def a(func):
-            return func
-        return a
-
-def __view_find(id: str):
-    __view_ele = __view_js.document.getElementById(id)
-    if __view_ele is None:
-        raise TypeError("could not find view.py element")
-    return __view_ele
-
-def __view_node_init(id: str) -> DOMNode:
-    __view_ele = __view_find(id)
-    return DOMNode(__view_ele.innerHTML, __view_ele.tagName, __view_ele.attributes)
+{src}
+{NEWLINE.join(_ESSENTIALS)}
+{NEWLINE.join(elements)}
 """
 
     def __init__(
@@ -198,10 +333,31 @@ def __view_node_init(id: str) -> DOMNode:
 
         if not id:
             self.attrs["id"] = self.id
-        
+
+    @browser_mirror(__init__)
+    def _mirror__init__(
+        self,
+        data: tuple[str | DOMNode],
+        tag: str,
+        attrs: dict[str, Any],
+        *,
+        is_head: bool = False,
+        skip_script: bool = False,
+        is_body: bool = False
+    ) -> None:
+        self.data = list(data)
+        self.tag = tag
+        self.attrs = attrs
+        self.id = attrs.get("id") or ''
+
     def add_node(self, *nodes: DOMNode):
         for node in nodes:
             self.data.append(node)
+
+    @browser_mirror(add_node)
+    def _mirror_add_node(self, *nodes: DOMNode):
+        for node in nodes:
+            ...
 
     append = add_node
 
@@ -216,7 +372,8 @@ def __view_node_init(id: str) -> DOMNode:
     def _add_mutable(self, name: ast.expr, value: ast.expr) -> None:
         assert isinstance(name, ast.Name), f"{ast.dump(name)} is not an ast.Name"
         self.mutables[name.id] = Mutable(decompile(value), name.id, self.caller_frame)
-
+    
+    @browser_supported
     def _make_attr_string(self):
         attr_str = ""
 
@@ -244,13 +401,19 @@ def __view_node_init(id: str) -> DOMNode:
 
         return inner
 
+    @browser_mirror(event)
+    def _mirror_event(self, name: str):
+        def inner(f):
+            return f
+        return inner
+
     def _handle_value(self, value: Any) -> Any:
         if isinstance(value, DOMNode):
             return f"__view_node_init('{self.id}')"
 
         return value
 
-    def compile(self, event_name: str) -> str:
+    def _compile(self, event_name: str) -> str:
         current_vars = {}
 
         for i in self.mutables.values():
@@ -262,17 +425,20 @@ def __view_node_init(id: str) -> DOMNode:
         py = "\n".join(mutable_script) + compile(_dedent(inspect.getsource(self.events[event_name])), self.call)
         return py
 
+    @browser_supported
     def __repr__(self) -> str:
         return f"DOMNode({self.data!r}, {self.tag!r}, {self.attrs!r})"
 
+    @browser_supported
     def content(self) -> str:
         return "\n".join([str(i) for i in self.data])
 
     def _gen_update(self) -> str:
         return f"""
-def __view_update(content: DOMNode | str) -> None:
+def render(content: DOMNode | str) -> None:
     __view_this_element = __view_find('{self.id}')
     __view_this_element.innerHTML = str(content)"""
+
 
     def __str__(self) -> str:
         if self.needs_script:
@@ -286,7 +452,7 @@ def __view_update(content: DOMNode | str) -> None:
                 self.script_setup = True
         
             for i, func in self.events.items():
-                compiled = self.compile(i)
+                compiled = self._compile(i)
                 name = f"__view_{self.id}_{i}"
                 
                 for body in self.bodies:
@@ -303,10 +469,13 @@ __view_find('{self.id}').addEventListener('{i}', __view_create_proxy({name}()))
 
         return f"<{self.tag}{self._make_attr_string()}>{self.content()}</{self.tag}>"
 
+    @browser_mirror(__str__)
+    def _mirror__str__(self):
+        return f"<{self.tag}{self._make_attr_string()}>{self.content()}</{self.tag}>"
+
     def __view_result__(self):
         return HTML(self.__str__()).__view_result__()
 
-DOMNode._comp_prefix_init()
 AutoCapitalizeType = Literal[
     "off", "none", "on", "sentences", "words", "characters"
 ]
@@ -335,7 +504,6 @@ def _node(
     *,
     head: bool = False,
     body: bool = False,
-    skip_script: bool = False,
 ) -> DOMNode:
     attributes: dict[str, str | None] = {**kwargs, **attrs}
 
@@ -2264,146 +2432,7 @@ def stylesheet(url: str) -> DOMNode:
 def js(url: str) -> DOMNode:
     return script(src=url)
 
-_head = head
-
 def page(*bdy: str | DOMNode, head: DOMNode | None = None) -> DOMNode:
-    return html(head or _head(), body(*bdy))
+    return html(head or globals()["head"](), body(*bdy))
 
-__all__ = (
-    "a",
-    "abbr",
-    "acronym",
-    "address",
-    "area",
-    "article",
-    "aside",
-    "audio",
-    "b",
-    "base",
-    "bdi",
-    "bdo",
-    "big",
-    "blockquote",
-    "body",
-    "br",
-    "button",
-    "canvas",
-    "caption",
-    "center",
-    "cite",
-    "code",
-    "col",
-    "colgroup",
-    "data",
-    "datalist",
-    "dd",
-    "html_del",
-    "details",
-    "dfn",
-    "dialog",
-    "dir",
-    "div",
-    "dl",
-    "dt",
-    "em",
-    "embed",
-    "fieldset",
-    "figcaption",
-    "figure",
-    "font",
-    "footer",
-    "form",
-    "frame",
-    "frameset",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
-    "head",
-    "header",
-    "hgroup",
-    "hr",
-    "html",
-    "i",
-    "iframe",
-    "image",
-    "img",
-    "input",
-    "ins",
-    "kbd",
-    "label",
-    "legend",
-    "li",
-    "link",
-    "main",
-    "map",
-    "mark",
-    "marquee",
-    "menu",
-    "menuitem",
-    "meta",
-    "meter",
-    "nav",
-    "nobr",
-    "noembed",
-    "noframes",
-    "noscript",
-    "object",
-    "ol",
-    "optgroup",
-    "option",
-    "output",
-    "p",
-    "param",
-    "picture",
-    "plaintext",
-    "portal",
-    "pre",
-    "progress",
-    "q",
-    "rb",
-    "rp",
-    "rt",
-    "rtc",
-    "ruby",
-    "s",
-    "samp",
-    "script",
-    "search",
-    "section",
-    "select",
-    "slot",
-    "small",
-    "source",
-    "span",
-    "strike",
-    "strong",
-    "style",
-    "sub",
-    "summary",
-    "sup",
-    "table",
-    "tbody",
-    "td",
-    "template",
-    "textarea",
-    "tfoot",
-    "th",
-    "thead",
-    "time",
-    "title",
-    "tr",
-    "track",
-    "tt",
-    "u",
-    "ul",
-    "var",
-    "video",
-    "wbr",
-    "xmp",
-    "stylesheet",
-    "js",
-    "page"
-)
+DOMNode._comp_prefix_init()
