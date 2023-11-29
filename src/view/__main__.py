@@ -361,5 +361,74 @@ async def index():
     return
 
 
+@main.group()
+def local() -> None:
+    ...
+
+
+@local.command(name="init")
+@click.option(
+    "--branch",
+    help="Name of the target branch.",
+    prompt="Name of your branch (e.g. impl-12)",
+    type=str,
+)
+def local_init(branch: str):
+    info("Cloning view.py repository...")
+    res = subprocess.call(
+        ["git", "clone", "https://github.com/ZeroIntensity/view.py"]
+    )
+    if res != 0:
+        error("failed to clone git repository")
+
+    success("Cloned view.py")
+    path = Path("view.py")
+
+    info("Creating branch...")
+    res = subprocess.call(
+        [
+            "git",
+            "--git-dir",
+            (path / ".git").absolute(),
+            "checkout",
+            "-b",
+            branch,
+        ]
+    )
+    if res != 0:
+        error("failed to create branch")
+
+    success("Created branch")
+    info("Creating virtual environment...")
+    venv_path = path / ".venv"
+    _venv.create(venv_path, with_pip=True)
+    success(f"Created virtual environment in {venv_path}")
+    info("Installing view.py locally...")
+    res = subprocess.call(
+        [
+            (venv_path / "bin" / "pip").absolute(),
+            "install",
+            str(path.absolute()),
+        ]
+    )
+
+    if res != 0:
+        error("failed to install project")
+
+    success("Successfully installed project")
+
+    test = path / "test.py"
+    test.write_text(
+        """import src.view as view
+
+app = view.new_app()
+app.run()""",
+        encoding="utf-8",
+    )
+
+    success("Created `test.py`")
+    success("Successfully created local development project")
+
+
 if __name__ == "__main__":
     main()
