@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 
 @dataclass()
@@ -15,6 +16,13 @@ class Source:
     types: list[str]
     elements: list[str]
     components: list[str]
+
+
+PATTERN = re.compile(r"(?<!^)(?=[A-Z])")
+
+
+def to_snake(name: str) -> str:
+    return PATTERN.sub("_", name).lower()
 
 
 NEWLINE: str = "\n"
@@ -36,6 +44,7 @@ async def _add_elements(
         attr_list = []
         param_src = []
         param_set_src = []
+        props = []
 
         async with session.get(url) as res:
             text = await res.text()
@@ -78,7 +87,49 @@ async def _add_elements(
                     param_src.append(f"{name}: {tp_name} | None = None,")
                     param_set_src.append(f"{name}={name}")
 
+            for th in soup.find_all("th", scope="row"):
+                if th.get_text() == "DOM interface":
+                    tr = th.parent
+                    td = tr.find("td")
+                    assert td
+                    interface = td.find("a")
+                    assert interface
+                    async with session.get(
+                        "https://developer.mozilla.org" + interface.get("href"),
+                    ) as interface_res:
+                        interface_soup = BeautifulSoup(
+                            await interface_res.text(), features="html.parser"
+                        )
+                        dl = interface_soup.find("dl")
+                        for index, dt in enumerate(dl.children):  # type: ignore
+                            if not isinstance(dt, Tag):
+                                continue
+
+                            if dt.name != "dt":
+                                continue
+
+                            if dt.find("abbr"):
+                                continue
+
+                            id = dt.get("id")
+                            assert isinstance(id, str)
+                            id = id.split(".", maxsplit=1)[-1]
+                            dd = list(dl.children)[index + 2]  # type: ignore
+                            desc = dd.find("p").get_text()  # type: ignore
+
+                            props.append(
+                                f"""@property
+    def {to_snake(id)}(self):
+        '''{desc}'''
+        return self._element().{id}
+"""
+                            )
+
         src = f"""class {ele_name.capitalize()}(Element):
+    '''
+    Element class for the `<{ele_name}>` element.
+    MDN Reference: {url}
+    '''
     TAG_NAME: ClassVar[str] = "{ele_name}"
     ATTRIBUTE_LIST: ClassVar[list[str]] = {attr_list}
 
@@ -90,6 +141,8 @@ async def _add_elements(
     ) -> None:
         super().__init__(content, attributes)
         {indent(NEWLINE, 2).join(attr_src)}
+
+    {NEWLINE.join(props)}
         """
         source.elements.append(src)
         source.components.append(
@@ -98,6 +151,7 @@ async def _add_elements(
     {indent(NEWLINE).join(param_src)}
     **global_attributes: GlobalAttributes,
 ) -> {ele_name.capitalize()}:
+    '''Component for the <{ele_name}> element.'''
     return {ele_name.capitalize()}(
         *content,
         global_attributes,
