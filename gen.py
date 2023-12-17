@@ -118,14 +118,14 @@ async def _add_elements(
                             desc = dd.find("p").get_text()  # type: ignore
 
                             props.append(
-                                f"""@property
+                                f"""    @property
     def {to_snake(id)}(self):
         '''{desc}'''
-        return self._element().{id}
+        return self._object.{id}
 """
                             )
 
-        src = f"""class {ele_name.capitalize()}(Element):
+        src = f"""class {ele_name.capitalize()}(Component):
     '''
     Element class for the `<{ele_name}>` element.
     MDN Reference: {url}
