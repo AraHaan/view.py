@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 
 
 @dataclass()
@@ -16,13 +15,7 @@ class Source:
     types: list[str]
     elements: list[str]
     components: list[str]
-
-
-PATTERN = re.compile(r"(?<!^)(?=[A-Z])")
-
-
-def to_snake(name: str) -> str:
-    return PATTERN.sub("_", name).lower()
+    all: list[str]
 
 
 NEWLINE: str = "\n"
@@ -66,8 +59,15 @@ async def _add_elements(
                         continue
 
                     name = i.get("id")
-                    attr_list.append(name)
+                    name = name.replace("-", "_")
+
                     tp = source.attributes.get(name)
+
+                    if name in {"for", "as", "async"}:
+                        name += "_"
+
+                    attr_list.append(name)
+
                     if not tp:
                         tp = input(f"Type for {name}: ")
                         source.attributes[name] = tp
@@ -76,58 +76,29 @@ async def _add_elements(
                             json.dump(source.attributes, f)
 
                     tp_name = f"{name.capitalize()}Type"
-                    source.types.append(f"{tp_name} = {tp}")
-                    if "present" not in tp.lower():
-                        attr_src.append(f"self.{name}: {tp_name} = {name}")
-                    else:
-                        attr_src.append(
-                            f"self.{name}: {tp_name} = {name} if {name} is not True else ''"
-                        )
+                    attr_src.append(
+                        f"self._{name}: {tp_name} | _ImplDefinedType = {name}"
+                    )
 
-                    param_src.append(f"{name}: {tp_name} | None = None,")
-                    param_set_src.append(f"{name}={name}")
-
-            for th in soup.find_all("th", scope="row"):
-                if th.get_text() == "DOM interface":
-                    tr = th.parent
-                    td = tr.find("td")
-                    assert td
-                    interface = td.find("a")
-                    assert interface
-                    async with session.get(
-                        "https://developer.mozilla.org" + interface.get("href"),
-                    ) as interface_res:
-                        interface_soup = BeautifulSoup(
-                            await interface_res.text(), features="html.parser"
-                        )
-                        dl = interface_soup.find("dl")
-                        for index, dt in enumerate(dl.children):  # type: ignore
-                            if not isinstance(dt, Tag):
-                                continue
-
-                            if dt.name != "dt":
-                                continue
-
-                            if dt.find("abbr"):
-                                continue
-
-                            id = dt.get("id")
-                            assert isinstance(id, str)
-                            id = id.split(".", maxsplit=1)[-1]
-                            dd = list(dl.children)[index + 2]  # type: ignore
-                            desc = dd.find("p").get_text()  # type: ignore
-
-                            props.append(
-                                f"""    @property
-    def {to_snake(id)}(self):
-        '''{desc}'''
-        return self._object.{id}
+                    param_src.append(
+                        f"{name}: {tp_name} | _ImplDefinedType = _ImplDefined,"
+                    )
+                    param_set_src.append(f"{name}={name},")
+                    props.append(
+                        f"""    @property
+    def {name}(self) -> {tp_name} | None:
+        return _handle_impl_defined(self._{name})
 """
-                            )
+                    )
 
-        src = f"""class {ele_name.capitalize()}(Component):
+        if ele_name == "del":
+            ele_name += "_"
+
+        source.all.append(repr(ele_name))
+
+        src = f"""class {ele_name.capitalize()}Component(Component):
     '''
-    Element class for the `<{ele_name}>` element.
+    Component class for the `<{ele_name}>` element.
     MDN Reference: {url}
     '''
     TAG_NAME: ClassVar[str] = "{ele_name}"
@@ -135,26 +106,26 @@ async def _add_elements(
 
     def __init__(
         self,
-        *content: Content,
+        *__content: Content,
         attributes: GlobalAttributes,
         {indent(NEWLINE, 2).join(param_src)}
     ) -> None:
-        super().__init__(content, attributes)
+        super().__init__(__content, attributes)
         {indent(NEWLINE, 2).join(attr_src)}
 
-    {NEWLINE.join(props)}
+{NEWLINE.join(props)}
         """
         source.elements.append(src)
         source.components.append(
             f"""def {ele_name}(
-    *content: Content,
+    *__content: Content,
     {indent(NEWLINE).join(param_src)}
-    **global_attributes: GlobalAttributes,
-) -> {ele_name.capitalize()}:
+    **global_attributes: Unpack[GlobalAttributes],
+) -> {ele_name.capitalize()}Component:
     '''Component for the <{ele_name}> element.'''
-    return {ele_name.capitalize()}(
-        *content,
-        global_attributes,
+    return {ele_name.capitalize()}Component(
+        *__content,
+        attributes=global_attributes,
         {indent(NEWLINE, 2).join(param_set_src)}
     )"""
         )
@@ -185,7 +156,7 @@ async def _search_elements(
 
 
 async def main():
-    source = Source(attributes={}, types=[], elements=[], components=[])
+    source = Source(attributes={}, types=[], elements=[], components=[], all=[])
     with open("attributes.json") as f:
         source.attributes = json.load(f)
     async with aiohttp.ClientSession() as session:
@@ -199,6 +170,24 @@ async def main():
                     await _search_elements(
                         summary.parent.find("ol"), source, session
                     )
+
+    for name, tp in source.attributes.items():
+        if "-" in name:
+            continue
+
+        if name in {"for", "as", "async"}:
+            name += "_"
+
+        source.types.append(f"{name.capitalize()}Type: TypeAlias = {tp}")
+
+    print(
+        "\n".join(source.types),
+        "\n".join(source.elements),
+        "\n".join(source.components),
+        "__all__ = (" + ",".join(source.all) + ")",
+        sep="\n",
+        file=open("out.py", "w"),
+    )
 
 
 asyncio.run(main())

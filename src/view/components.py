@@ -36,26 +36,6 @@ NEWLINE = "\n"
 
 
 class DOMNode:
-    _comp_prefix: ClassVar[str]
-
-    @classmethod
-    def _comp_prefix_init(cls) -> None:
-        src = compile_pyodide(cls)
-        glb = globals()
-        elements = [inspect.getsource(_node)] + [
-            inspect.getsource(glb[i]) for i in __all__
-        ]
-
-        cls._comp_prefix = f"""from __future__ import annotations
-# view.py {__version__}
-import js as __view_js
-def browser_supported(func): return func
-
-{src}
-{NEWLINE.join(_ESSENTIALS)}
-{NEWLINE.join(elements)}
-"""
-
     def __init__(
         self,
         data: tuple[str | DOMNode],
