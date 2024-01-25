@@ -1,22 +1,29 @@
 from __future__ import annotations
 
+import asyncio
 import getpass
 import os
 import random
 import re
 import subprocess
 import venv as _venv
+from inspect import iscoroutine
 from pathlib import Path
+from typing import TYPE_CHECKING, NoReturn
+
+if TYPE_CHECKING:
+    from .routing import Route
 
 import click
 
+from .__about__ import __version__
 from ._logging import VIEW_TEXT
 from .exceptions import AppNotFoundError
 
 B_OPEN = "{"
 B_CLOSE = "}"
 
-_GIT_EMAIL = re.compile(r'.*email = "(.+)"')
+_GIT_EMAIL = re.compile(r' *email = "(.+)"')
 
 
 def _get_email():
@@ -64,7 +71,7 @@ def warn(msg: str) -> None:
     click.secho(f" ! {msg}", fg="yellow", bold=True)
 
 
-def error(msg: str) -> None:
+def error(msg: str) -> NoReturn:
     click.secho(f" ! {msg}", fg="red", bold=True)
     exit(1)
 
@@ -73,8 +80,12 @@ def info(msg: str) -> None:
     click.secho(f" * {msg}", fg="bright_magenta", bold=True)
 
 
+def ver() -> None:
+    click.echo(f"view.py {__version__}")
+
 def welcome() -> None:
     click.secho(random.choice(VIEW_TEXT) + "\n", fg="blue", bold=True)
+    ver()
     click.echo("Docs: ", nl=False)
     click.secho("https://view.zintensity.dev", fg="blue", bold=True)
     click.echo("GitHub: ", nl=False)
@@ -87,12 +98,15 @@ def welcome() -> None:
 
 @click.group(invoke_without_command=True)
 @click.option("--debug", "-d", is_flag=True)
+@click.option("--version", "-v", is_flag=True)
 @click.pass_context
-def main(ctx: click.Context, debug: bool) -> None:
+def main(ctx: click.Context, debug: bool, version: bool) -> None:
     if debug:
         from .util import enable_debug
 
         enable_debug()
+    if version:
+        ver()
     elif not ctx.invoked_subcommand:
         welcome()
 
@@ -194,6 +208,85 @@ def prod():
 )
 def deploy(target: str):
     raise NotImplementedError
+
+@main.command()
+@click.option(
+    "--path",
+    "-p",
+    type=click.Path(
+        exists=False,
+        file_okay=False,
+        resolve_path=True,
+        path_type=Path,
+        writable=True,
+    ),
+    default=Path.cwd() / "build",
+)
+def build(path: Path):
+    from .config import load_config
+    from .routing import Method
+    from .util import extract_path
+    
+    conf = load_config()
+    app = extract_path(conf.app.app_path)
+    app.load()
+    results: dict[str, str] = {}
+
+    info("Getting routes")
+    for i in app.loaded_routes:
+        if (not i.method) or (i.method != Method.GET):
+            warn(f"{i} is not a GET route, skipping it")
+            continue
+        
+        if not i.path:
+            warn(f"{i} needs path parameters, skipping it")
+            continue
+
+        info(f"Getting {i.path or '/???'}")
+
+        if i.inputs:
+            warn(f"{i.path} needs a route input, skipping it")
+            continue
+
+        res = i.func()
+
+        if iscoroutine(res):
+            loop = asyncio.get_event_loop()
+            res = loop.run_until_complete(res)
+        
+        text: str
+
+        if hasattr(res, "__view_response__"):
+            res = res.__view_response__()  # type: ignore
+
+        if isinstance(res, tuple):
+            for x in res:
+                if isinstance(x, str):
+                    text = x
+                    break
+            error(f"{i.path} didn't return a response")
+        else:
+            text = res  # type: ignore
+
+        assert i.path
+        results[i.path[1:]] = text
+        success(f"Got response for {i.path}")
+
+    if path.exists():
+        error(f"{path} already exists")
+
+    path.mkdir()
+    success(f"Created directory {path}")
+    
+    for file_path, content in results.items():
+        directory = path / file_path
+        file = directory / "index.html"
+        directory.mkdir(exist_ok=True)
+        success(f"Created {directory}")
+        file.write_text(content, encoding="utf-8")
+        success(f"Created {file}")
+
+    success("Successfully built app")
 
 
 @main.command()
@@ -302,20 +395,20 @@ def init(
     with open(app_path, "w") as f:
         if load in {"filesystem", "simple"}:
             f.write(
-                f"# view.py {__version__}"
-                """\nimport view
+                f"# view.py {__version__}\n"
+                """from view import new_app
 
-app = view.new_app()
+app = new_app()
 app.run()
 """
             )
 
         if load == "manual":
             f.write(
-                f"# view.py {__version__}"
-                """\nimport view
+                f"# view.py {__version__}\n"
+                """from view import new_app
 
-app = view.new_app()
+app = new_app()
 
 @app.get("/")
 async def index():
@@ -345,13 +438,12 @@ app.run()
         pathstr = "" if load == "filesystem" else "'/'"
         with open(index, "w") as f:
             f.write(
-                f"""from view.routing import get
-
+                f"""from view import get
 
 @get({pathstr})
 async def index():
     return 'Hello, view.py!'
-    """
+"""
             )
 
             success("Created `routes/index.py`")

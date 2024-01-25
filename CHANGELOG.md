@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- Fixed `template` attribute with the `view` template renderer
+- Added the `context` decorator and the `Context` type
+- Added the `headers` parameter to functions on `TestingContext`
+- Modified some behavior of automatic route inputs
+- Fixed syntax errors in `view init`
+- Added `Route.middleware`
+- Routes with equivalent paths but different methods now return `405 Method Not Allowed` when accessed
+- Added `route` and `App.route`
+- Added docstrings to router functions
+- Added the `JSON` response class
+- Added the `custom` body translate strategy
+- Made `method` a keyword-only parameter in `path`
+- Added the `extract_path` utility
+- Added the `view build` command
+- Added `App.template`
+- Route errors now display the error message when `dev` is `True`
+- Changed exception rendering in route errors
+- Added `compile_type` and `TCValidator`
+- Added `markdown` and `App.markdown`
+- **Breaking Change:** The `body` parameter in `Response` is now required
+
+## [1.0.0-alpha8] - 2024-1-21
+
+- Added optional dependencies for `databases` and `templates`
+- Added environment prefixes for database configuration
+- Added `templates` and `TemplatesConfig` to config
+- Added the `templates` function
+- Added support for `attrs` in type validation
+- Added documentation for caching
+- Added the `cache_rate` parameter to routers
+- Removed `psutil` and `plotext` as a global dependency
+- Added `fancy` optional dependencies
+- Fixed route inputs with synchronous routes
+- **Breaking Change:** Route inputs are now applied in the order of the decorator call as it appears in code
+
+## [1.0.0-alpha7] - 2023-12-7
+
+**Quick Patch Release**
+
+- Remerged new `view init` command.
+
+## [1.0.0-alpha6] - 2023-11-30
+
 - Added `get_app`
 - Added documentation generation
 - Added database support (NOT FINISHED)
@@ -19,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Renamed `EnvironmentError` to `BadEnvironmentError`
 - Added logging functions to `App`
 - Changed environment prefixes for configuration
+- Rewrote documentation
 - Added `patterns` loader
 - Added handling of relative paths in the configuration setting `loader_path`
 - Added exists validation to `loader_path`
