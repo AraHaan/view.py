@@ -457,6 +457,18 @@ async def index():
 def local() -> None:
     ...
 
+@local.command()
+def install():
+    info("Installing project")
+    res = subprocess.call(
+        ["pip", "install", "."]
+    )
+    if res != 0:
+        error("failed to install view.py locally")
+
+    success("Successfully installed project locally")
+
+
 
 @local.command(name="init")
 @click.option(
